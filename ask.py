@@ -6,6 +6,7 @@ Usage: python ask.py [-m model] [-s]
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.request
@@ -14,25 +15,29 @@ import urllib.parse
 OLLAMA_BASE = "http://localhost:11434"
 DEFAULT_MODEL = "qwen3.5:latest"
 
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 def fetch_local_models() -> list:
     try:
         url = f"{OLLAMA_BASE}/api/tags"
-        with urllib.request.urlopen(url, timeout=3) as r:
+        req = urllib.request.Request(url, headers=HTTP_HEADERS)
+        with urllib.request.urlopen(req, timeout=3) as r:
             return [m["name"] for m in json.loads(r.read()).get("models", [])]
     except Exception:
         return []
 
 def web_search(query: str) -> str:
-    url = "https://api.duckduckgo.com/?q=" + urllib.parse.quote(query) + "&format=json&no_html=1"
     try:
-        with urllib.request.urlopen(url, timeout=5) as r:
-            data = json.loads(r.read())
-        answer = data.get("AbstractText") or data.get("Answer") or ""
-        related = [r["Text"] for r in data.get("RelatedTopics", []) if "Text" in r][:3]
-        return (answer + "\n" + "\n".join(related)).strip() or "No instant answer found."
+        from ddgs import DDGS
+        results = DDGS().text(query, max_results=3)
+        if not results:
+            return "No results found."
+        return "\n".join(f"- {r['title']}: {r['body']}" for r in results)
     except Exception as e:
         return f"Search failed: {e}"
-
+    
 def ask_ollama(prompt: str, model: str, think_enabled: bool) -> str:
     payload_dict = {
         "model": model,
@@ -44,9 +49,14 @@ def ask_ollama(prompt: str, model: str, think_enabled: bool) -> str:
         payload_dict["think"] = False
 
     payload = json.dumps(payload_dict).encode("utf-8")
-    req = urllib.request.Request(f"{OLLAMA_BASE}/api/generate", data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    req = urllib.request.Request(
+        f"{OLLAMA_BASE}/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json", **HTTP_HEADERS},
+        method="POST"
+    )
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=180) as r:
             return json.loads(r.read()).get("response", "").strip()
     except Exception as e:
         return f"Ollama error: {e}"
@@ -90,7 +100,7 @@ def main():
         if user_input.startswith("/"):
             parts = user_input.split()
             cmd = parts[0].lower()
-            
+
             if cmd == "/exit":
                 print("Goodbye!")
                 break
@@ -112,32 +122,36 @@ def main():
             elif cmd in ["/model", "/models"]:
                 local_models = fetch_local_models()
                 if not local_models:
-                    print("⚠️ Could not retrieve local models.\n")
+                    print("Could not retrieve local models.\n")
                     continue
-                
+
                 if len(parts) > 1:
                     target_model = parts[1]
                     if target_model in local_models or f"{target_model}:latest" in local_models:
                         model = target_model if target_model in local_models else f"{target_model}:latest"
                         print_interface(model, search_enabled, think_enabled)
                     else:
-                        print(f"❌ Model '{target_model}' not found locally.\n")
+                        print(f"Model '{target_model}' not found locally.\n")
                 else:
                     print("\nLocal Models:")
                     for m in local_models:
                         print(f"  {'*' if m == model else ' '} {m}")
-                    print("\n💡 Type '/model [name]' to switch.\n")
+                    print("\nType '/model [name]' to switch.\n")
                 continue
             else:
                 print(f"Unknown command: {cmd}\n")
                 continue
 
-        # Build Context
+        # Build context
         context_str = ""
         if search_enabled:
             print("🔍 Searching...", file=sys.stderr)
             search_context = web_search(user_input)
-            if search_context and "Search failed" not in search_context:
+
+            if search_context and "Search network failure" not in search_context:
+                print("\n🌐 [Search Context Found]")
+                print(search_context)
+                print("-" * 50)
                 context_str += f"Web Context:\n{search_context}\n\n"
 
         if history:
@@ -145,19 +159,16 @@ def main():
 
         full_prompt = f"{context_str}Question: {user_input}\n\nGive a short, accurate answer."
 
-        # Fetch Response and benchmark performance
         print(f"🤖 [{model}] Thinking...", file=sys.stderr, end="\r")
-        
+
         start_time = time.time()
         response = ask_ollama(full_prompt, model, think_enabled)
         elapsed_time = time.time() - start_time
-        
-        # Clear the "Thinking..." line
+
         print(" " * 50, end="\r", file=sys.stderr)
-        
-        # Output result with execution duration
+
         print(f"\n{response}")
-        print(f"⏱️ Time taken: {elapsed_time:.2f}s\n")
+        print(f"⏱️  {elapsed_time:.2f}s\n")
 
         if "Ollama error" not in response:
             history.append(f"User: {user_input}")
