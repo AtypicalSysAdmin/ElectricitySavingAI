@@ -25,7 +25,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 OLLAMA_BASE = "http://localhost:11434"
-DEFAULT_MODEL = "phi4-mini:latest"
+DEFAULT_MODEL = "qwen3.5:4b"
 MODEL_KEEP_ALIVE= "-1m"
 OLLAMA_TIMEOUT = 300
 CONNECT_TIMEOUT = 3
